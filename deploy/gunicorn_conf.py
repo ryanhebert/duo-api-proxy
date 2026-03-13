@@ -6,7 +6,8 @@ proxy_port = os.getenv("PROXY_PORT", "8000")
 use_https = os.getenv("PROXY_USE_HTTPS", "false").lower() == "true"
 
 bind = f"0.0.0.0:{proxy_port}"
-workers = multiprocessing.cpu_count() * 2 + 1
+# Recommended for containers: set GUNICORN_WORKERS=2 or 4 to avoid spawning too many processes on large hosts
+workers = int(os.getenv("GUNICORN_WORKERS", multiprocessing.cpu_count() * 2 + 1))
 worker_class = "uvicorn.workers.UvicornWorker"
 keepalive = 5
 timeout = 30

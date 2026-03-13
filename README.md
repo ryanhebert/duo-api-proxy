@@ -58,6 +58,7 @@ python main.py
 ```bash
 docker-compose -f deploy/docker-compose.yml up --build -d
 ```
+> **Note:** Set `GUNICORN_WORKERS=2` or `4` in your `.env` for containerized deployments to avoid spawning excessive processes on large host machines.
 
 ## 🔒 Security Posture
 
