@@ -5,6 +5,7 @@ __pycache__/
 
 # Environments
 .env
+.env.bak
 .venv
 env/
 venv/
@@ -25,3 +26,8 @@ dump.rdb
 
 # SSL Certificates
 certs/
+
+.gemini/
+.claude/
+.github/
+gha-creds-*.json

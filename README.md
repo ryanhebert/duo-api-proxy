@@ -85,3 +85,12 @@ If `PROXY_ENABLE_DCR` is enabled, you can register new OIDC clients via:
 
 ## 📜 License
 MIT
+
+## 🤖 Agent Team
+This project is managed by a specialized team of Gemini sub-agents. They work primarily from GitHub Issues to evolve and maintain the proxy:
+
+*   **Project Manager:** Triage, task delegation, and progress tracking.
+*   **Proxy Architect:** Core FastAPI logic, HMAC signing, and performance.
+*   **Identity Guard:** OIDC 2.1, RBAC policies, and real-time revocation.
+*   **DX Specialist:** Swagger UI, DCR automation, and documentation.
+*   **SRE Specialist:** Docker, Redis, setup automation, and reliability.
