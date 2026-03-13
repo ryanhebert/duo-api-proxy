@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Docker
+.dockerignore
+
+# IDEs
+.vscode/
+.idea/
+
+# Local database/cache
+*.db
+dump.rdb
+
+# SSL Certificates
+certs/

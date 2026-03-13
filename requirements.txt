@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+authlib[starlette]
+duo_client
+python-jose
+cryptography
+httpx
+python-dotenv
+itsdangerous
+PyYAML
+redis
+slowapi
+gunicorn
