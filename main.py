@@ -7,7 +7,6 @@ import base64
 import logging
 import json
 import html
-import asyncio
 import argparse
 import urllib.parse
 from typing import Optional, List
