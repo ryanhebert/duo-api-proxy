@@ -13,8 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code from parent context
-COPY . .
+# Copy application code
+COPY main.py .
+COPY deploy/ deploy/
 
 # Ensure certs directory exists
 RUN mkdir -p certs
