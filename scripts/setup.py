@@ -68,9 +68,12 @@ def setup():
     while True:
         default = existing.get("DUO_HOST", "api-xxxxxxxx.duosecurity.com")
         duo_host = input(f"Duo API Hostname [{default}]: ").strip() or default
-        if validate_duo_host(duo_host) or duo_host == default:
+        if validate_duo_host(duo_host):
             break
-        print("Invalid hostname format. Should be like: api-837f8f1f.duosecurity.com")
+        if duo_host == "api-xxxxxxxx.duosecurity.com":
+            print("Error: 'api-xxxxxxxx.duosecurity.com' is a placeholder. Please enter your actual Duo API hostname.")
+        else:
+            print("Invalid hostname format. Should be like: api-837f8f1f.duosecurity.com")
 
     while True:
         default = existing.get("DUO_IKEY", "")

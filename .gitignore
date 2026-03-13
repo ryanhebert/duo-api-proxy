@@ -29,5 +29,9 @@ certs/
 
 .gemini/
 .claude/
-.github/
 gha-creds-*.json
+
+# Test / Coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/

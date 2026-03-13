@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  DUO_HOST: api-test.duosecurity.com
+  DUO_IKEY: DITEST00000000000000
+  DUO_SKEY: test_secret_key_for_signing_only
+  DUO_SSO_WELL_KNOWN_URL: https://sso-test.duosecurity.com/.well-known/openid-configuration
+  DUO_SSO_CLIENT_ID: DICLIENT0000000000TEST
+  DUO_SSO_CLIENT_SECRET: test_client_secret_value
+  PROXY_SESSION_SECRET: test_session_secret_32_chars_long!!
+  PROXY_ENABLE_DCR: "false"
+  PROXY_ENABLE_DOCS: "true"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: pytest
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-report
+          path: htmlcov/
