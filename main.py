@@ -541,6 +541,10 @@ async def swagger_oauth2_redirect(request: Request):
     return HTMLResponse(f"""
         <!doctype html><html><body onload='run()'><script>
             function run() {{
+                if (!window.opener || !window.opener.swaggerUIRedirectOauth2) {{
+                    document.body.innerText = 'Error: OAuth redirect window.opener not available.';
+                    return;
+                }}
                 var oauth2 = window.opener.swaggerUIRedirectOauth2;
                 var url = new URL(window.location.href);
                 var params = {{}};
