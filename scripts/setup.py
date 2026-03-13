@@ -180,10 +180,24 @@ def setup():
     else:
         enable_dcr = enable_dcr == 'y'
 
-    dcr_token_def = existing.get("DCR_INITIAL_ACCESS_TOKEN", "")
     dcr_token = ""
     if enable_dcr:
-        dcr_token = input(f"Initial Access Token for DCR [{dcr_token_def}]: ").strip() or dcr_token_def
+        dcr_token_def = existing.get("DCR_INITIAL_ACCESS_TOKEN", "")
+        if dcr_token_def:
+            regen = input("Existing DCR token found. Regenerate it? (y/n) [n]: ").lower() == 'y'
+            if regen:
+                dcr_token = secrets.token_hex(32)
+                print(f"  [GENERATED] New DCR_INITIAL_ACCESS_TOKEN: {dcr_token}")
+            else:
+                dcr_token = dcr_token_def
+        else:
+            auto = input("Auto-generate a secure DCR Initial Access Token? (y/n) [y]: ").lower() != 'n'
+            if auto:
+                dcr_token = secrets.token_hex(32)
+                print(f"  [GENERATED] DCR_INITIAL_ACCESS_TOKEN: {dcr_token}")
+                print("  Save this token — you will need it to register clients via the Swagger UI.")
+            else:
+                dcr_token = input("  Enter DCR Initial Access Token: ").strip()
 
     # Generate or reuse session secret
     existing_secret = existing.get("PROXY_SESSION_SECRET")
@@ -201,7 +215,7 @@ def setup():
     print(f"Proxy Port:  {proxy_port}")
     print(f"HTTPS:       {'Enabled' if use_https else 'Disabled'}")
     print(f"Docs UI:     {'Enabled' if enable_docs else 'Disabled'}")
-    print(f"DCR:         {'Enabled' if enable_dcr else 'Disabled'}")
+    print(f"DCR:         {'Enabled (token set)' if enable_dcr and dcr_token else 'Enabled (NO TOKEN - startup will fail!)' if enable_dcr else 'Disabled'}")
     print(f"Caching:     {'Redis' if redis_url else 'In-Memory'}")
     print("==================================================")
     

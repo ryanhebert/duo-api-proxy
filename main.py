@@ -35,12 +35,12 @@ def get_env_required(key: str) -> str:
     return val
 
 # Validate default secrets
-PROXY_SESSION_SECRET = os.getenv("PROXY_SESSION_SECRET", "change-me-in-production")
-if PROXY_SESSION_SECRET == "change-me-in-production":
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    print("WARNING: Using default PROXY_SESSION_SECRET. This is INSECURE.")
-    print("Please run setup.py or set a random string in your .env.")
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+PROXY_SESSION_SECRET = os.getenv("PROXY_SESSION_SECRET", "")
+if not PROXY_SESSION_SECRET or PROXY_SESSION_SECRET == "change-me-in-production":
+    raise RuntimeError(
+        "CRITICAL: PROXY_SESSION_SECRET is not set or is the default placeholder. "
+        "Set a random secret in your .env before starting the proxy."
+    )
 
 DUO_IKEY = os.getenv("DUO_IKEY")
 DUO_SKEY = os.getenv("DUO_SKEY")
@@ -126,6 +126,9 @@ def sign_duo_request(method, host, path, params, skey, ikey):
     return auth_header, now
 
 # --- Identity Helpers ---
+def get_user_display_name(user: dict) -> str:
+    return user.get("email") or user.get("name") or user.get("sub", "unknown")
+
 def parse_scopes(data):
     if not data: return []
     raw = data.get('scope') or data.get('scp', '')
@@ -158,15 +161,19 @@ async def validate_bearer_token(token: str, app_state):
         jwks_resp = await app_state.http_client.get(discovery["jwks_uri"])
         jwks = jwks_resp.json()
         
-        issuer = DUO_SSO_WELL_KNOWN_URL.split("/.well-known")[0]
-        payload = jwt.decode(
-            token, jwks, algorithms=["RS256"], 
-            issuer=issuer, 
-            options={"verify_aud": not PROXY_ENABLE_DCR}
-        )
+        # Issue #5: More robust issuer extraction using urllib.parse
+        parsed_url = urllib.parse.urlparse(DUO_SSO_WELL_KNOWN_URL)
+        issuer = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path.split('/.well-known')[0]}"
         
-        if PROXY_ENABLE_DCR and not payload.get("aud"):
-            return None
+        expected_audiences = [f"https://{DUO_HOST}"]
+        if PROXY_ENABLE_DCR and DUO_SSO_CLIENT_ID:
+            expected_audiences.append(DUO_SSO_CLIENT_ID)
+        payload = jwt.decode(
+            token, jwks, algorithms=["RS256"],
+            issuer=issuer,
+            audience=expected_audiences,
+            options={"verify_aud": True}
+        )
             
         profile = await get_active_user_profile(token, app_state)
         return payload if profile else None
@@ -180,6 +187,11 @@ async def lifespan(app: FastAPI):
     # Startup Validation
     required = ["DUO_IKEY", "DUO_SKEY", "DUO_HOST", "DUO_SSO_CLIENT_ID", "DUO_SSO_CLIENT_SECRET", "DUO_SSO_WELL_KNOWN_URL"]
     for v in required: get_env_required(v)
+    if PROXY_ENABLE_DCR and not DCR_INITIAL_TOKEN:
+        raise RuntimeError(
+            "DCR_INITIAL_ACCESS_TOKEN must be set when PROXY_ENABLE_DCR=true. "
+            "Generate a strong random token (e.g. openssl rand -hex 32) and add it to .env."
+        )
     
     # Global HTTP Client with Retries
     app.state.http_client = httpx.AsyncClient(
@@ -269,7 +281,12 @@ async def root(request: Request):
 @app.post("/register", include_in_schema=False)
 async def register_client(request: Request):
     if not PROXY_ENABLE_DCR: raise HTTPException(status_code=404)
-    
+
+    # Authenticate the caller — must present the DCR Initial Access Token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer ") or auth_header[7:] != DCR_INITIAL_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing DCR authorization token")
+
     headers = {}
     if DCR_INITIAL_TOKEN:
         # Properly use the IAT if configured
@@ -298,7 +315,8 @@ def custom_openapi():
     if app.openapi_schema: return app.openapi_schema
     try:
         with open(OPENAPI_SPEC_PATH, "r") as f: schema = yaml.safe_load(f)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not load OpenAPI spec from '{OPENAPI_SPEC_PATH}': {e}. Falling back to auto-generated schema.")
         return get_openapi(title=app.title, version="1.0", routes=app.routes)
 
     resource_map = {
@@ -350,11 +368,13 @@ async def custom_swagger_ui_html(request: Request):
         .btn-logout {{ background: #fa4b4b; color: white !important; }}
         .btn-dcr {{ background: #4bfa4b; color: black !important; }}
         .btn-clear {{ background: #666; color: white !important; }}
+        .iat-input {{ padding: 5px 10px; border-radius: 4px; border: 1px solid #4bfa4b; background: #333; color: white; font-size: 13px; margin-left: 10px; width: 180px; }}
     </style></head><body>
     <div id="proxy-header"><div class="header-title">Duo Admin API Proxy</div><div class="header-controls">
         <button id="clear-btn" class="custom-btn btn-clear">Clear Saved Client</button>
         <a href="/logout" class="custom-btn btn-logout">Logout</a>
-        <button id="dcr-btn" class="custom-btn btn-dcr" style="display: {'inline-flex' if PROXY_ENABLE_DCR else 'none'}">Dynamic Registration</button>
+        <input id="iat-input" type="password" class="iat-input" placeholder="DCR Access Token" autocomplete="off" style="display: {'inline-block' if PROXY_ENABLE_DCR else 'none'}" title="Enter your DCR_INITIAL_ACCESS_TOKEN">
+        <button id="dcr-btn" class="custom-btn btn-dcr" style="display: {'inline-flex' if PROXY_ENABLE_DCR else 'none'}">Register Client</button>
     </div></div>
     <div id="swagger-ui"></div>
     <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
@@ -367,49 +387,65 @@ async def custom_swagger_ui_html(request: Request):
             }});
             ui.initOAuth({{ scopes: "{scope_str}", usePkceWithAuthorizationCodeGrant: true }});
 
+            // Restore IAT input from sessionStorage
+            const iatInput = document.getElementById('iat-input');
+            if (iatInput) {{
+                iatInput.value = sessionStorage.getItem('proxy_dcr_iat') || '';
+                iatInput.oninput = () => sessionStorage.setItem('proxy_dcr_iat', iatInput.value);
+            }}
+
             const fillModal = () => {{
-                const cid = localStorage.getItem('proxy_dcr_client_id');
-                const secret = localStorage.getItem('proxy_dcr_client_secret');
+                const cid = sessionStorage.getItem('proxy_dcr_client_id');
+                const secret = sessionStorage.getItem('proxy_dcr_client_secret');
                 if (!cid) return;
                 const idIn = document.querySelector('input[name="client_id"]');
                 const secIn = document.querySelector('input[name="client_secret"]');
                 const cbs = document.querySelectorAll('.scope-checkbox');
-                if (idIn && idIn.value !== cid) {{
-                    idIn.value = cid;
-                    idIn.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                if (idIn && secIn) {{
+                    if (idIn.value !== cid) {{
+                        idIn.value = cid;
+                        idIn.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    }}
+                    if (secIn.value !== secret) {{
+                        secIn.value = secret;
+                        secIn.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    }}
+                    if (cbs.length > 0) cbs.forEach(cb => {{ if (!cb.checked) cb.click(); }});
+                    clearInterval(poller);
                 }}
-                if (secIn && secIn.value !== secret) {{
-                    secIn.value = secret;
-                    secIn.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-                if (cbs.length > 0) cbs.forEach(cb => {{ if (!cb.checked) cb.click(); }});
             }};
 
             const poller = setInterval(fillModal, 500);
-            
+
             document.getElementById('clear-btn').onclick = () => {{
-                localStorage.clear();
+                sessionStorage.removeItem('proxy_dcr_client_id');
+                sessionStorage.removeItem('proxy_dcr_client_secret');
+                sessionStorage.removeItem('proxy_dcr_iat');
+                if (iatInput) iatInput.value = '';
                 window.location.reload();
             }};
 
             const dcrBtn = document.getElementById('dcr-btn');
             if (dcrBtn) {{
                 dcrBtn.onclick = async () => {{
+                    const iat = sessionStorage.getItem('proxy_dcr_iat') || '';
+                    if (!iat) {{ alert("Enter your DCR Access Token in the field next to this button first."); return; }}
                     const name = prompt("Client Name:", "Swagger-UI");
                     if (!name) return;
                     try {{
                         const resp = await fetch('/register', {{
-                            method: 'POST', headers: {{ 'Content-Type': 'application/json' }},
-                            body: JSON.stringify({{ 
-                                client_name: name, application_type: 'web', 
-                                redirect_uris: [window.location.origin + '/docs', window.location.origin + '/docs/oauth2-redirect'] 
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json', 'Authorization': `Bearer ${{iat}}` }},
+                            body: JSON.stringify({{
+                                client_name: name, application_type: 'web',
+                                redirect_uris: [window.location.origin + '/docs', window.location.origin + '/docs/oauth2-redirect']
                             }})
                         }});
-                        if (!resp.ok) throw new Error("Registration Failed");
+                        if (!resp.ok) throw new Error(`Registration failed: ${{resp.status}}`);
                         const data = await resp.json();
-                        localStorage.setItem('proxy_dcr_client_id', data.client_id);
-                        localStorage.setItem('proxy_dcr_client_secret', data.client_secret || "");
-                        alert("Success! Registered. Opening Modal...");
+                        sessionStorage.setItem('proxy_dcr_client_id', data.client_id);
+                        sessionStorage.setItem('proxy_dcr_client_secret', data.client_secret || "");
+                        alert("Success! Client registered. Opening authorization modal...");
                         document.querySelector('.authorize').click();
                     }} catch (e) {{ alert(e.message); }}
                 }};
@@ -452,6 +488,7 @@ async def duo_proxy(version: str, path: str, request: Request):
             request.session.clear()
             raise HTTPException(status_code=401, detail="Session revoked or expired")
         u.update(u_refreshed)
+        request.session['user'] = u  # Mark session as modified (Issue #3)
     
     if not u: raise HTTPException(status_code=401, detail="Unauthorized")
     
@@ -472,12 +509,18 @@ async def duo_proxy(version: str, path: str, request: Request):
     full_path = f"/admin/{version}/{path}"
     query_params = dict(request.query_params)
     
+    # Issue #2: Cache raw body first to prevent stream exhaustion
+    raw_body = await request.body()
+    
     # Duo requires form parameters to be signed for POST/PUT
     signing_params = query_params.copy()
     if method in ["POST", "PUT"]:
         try:
-            form = await request.form()
-            signing_params.update(dict(form))
+            # Parse form params manually from cached body to avoid request.form() stream issues
+            if raw_body:
+                form_params = urllib.parse.parse_qs(raw_body.decode(), keep_blank_values=True)
+                # parse_qs returns lists, Duo expects single values
+                signing_params.update({k: v[0] for k, v in form_params.items()})
         except Exception: pass
     
     sig, dt = sign_duo_request(method, DUO_HOST, full_path, signing_params, DUO_SKEY, DUO_IKEY)
@@ -496,7 +539,7 @@ async def duo_proxy(version: str, path: str, request: Request):
             url=f"https://{DUO_HOST}{full_path}", 
             headers=headers, 
             params=query_params, 
-            content=await request.body()
+            content=raw_body
         )
         
         if pr.status_code == 429:

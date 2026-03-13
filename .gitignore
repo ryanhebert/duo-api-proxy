@@ -14,7 +14,7 @@ env.bak/
 venv.bak/
 
 # Docker
-.dockerignore
+# Note: .dockerignore is intentionally tracked in git (not ignored)
 
 # IDEs
 .vscode/

@@ -1,0 +1,34 @@
+# Secrets and credentials — never bake into image layers
+.env
+.env.bak
+certs/
+
+# Version control
+.git/
+
+# Agent and IDE config
+.claude/
+.gemini/
+.github/
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Dev scripts (not needed at runtime)
+scripts/
+
+# Redis dump
+dump.rdb
+
+# Docs
+*.md
