@@ -148,8 +148,19 @@ def setup():
                     f.write(cert.public_bytes(serialization.Encoding.PEM))
                 print(f"Certificates created in ./{cert_dir}")
             except ImportError:
-                print("[WARNING] 'cryptography' library not found. Skipping cert generation.")
-                print("Please run 'pip install -r requirements.txt' first.")
+                print("[WARNING] 'cryptography' library not found. It is required to generate self-signed certificates.")
+                do_install = input("Would you like to install 'cryptography' now? (y/n) [y]: ").lower() != 'n'
+                if do_install:
+                    print("Installing cryptography...")
+                    try:
+                        # Try to install in the current environment
+                        subprocess.run([sys.executable, "-m", "pip", "install", "cryptography"], check=True)
+                        print("[SUCCESS] cryptography installed. Please restart setup.py to complete the configuration.")
+                        sys.exit(0)
+                    except Exception as e:
+                        print(f"[ERROR] Failed to install cryptography: {e}")
+                else:
+                    print("Skipping cert generation. You will need to provide your own certificates or run 'pip install cryptography' later.")
     else:
         cert_path = ""
         key_path = ""
