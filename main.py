@@ -1,11 +1,14 @@
 import os
+import sys
 import time
 import hmac
 import hashlib
 import base64
 import logging
 import json
+import html
 import asyncio
+import argparse
 import urllib.parse
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -56,6 +59,18 @@ CACHE_TTL = int(os.getenv("REVOCATION_CHECK_CACHE_SECONDS", "30"))
 PROXY_DEBUG = os.getenv("PROXY_DEBUG", "false").lower() == "true"
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://localhost:8443,http://localhost:8000").split(",")
 
+# --- Debug Mode Resolution ---
+# Precedence: --debug CLI flag > DEBUG_MODE env var > PROXY_DEBUG env var
+def _resolve_debug_mode() -> bool:
+    aliases = {"--debug", "-debug", "--d", "-d"}
+    if aliases.intersection(sys.argv[1:]):
+        return True
+    if os.getenv("DEBUG_MODE", "").lower() == "true":
+        return True
+    return PROXY_DEBUG
+
+debug_mode: bool = _resolve_debug_mode()
+
 # --- Logging Setup ---
 class ProxyLoggingFilter(logging.Filter):
     def filter(self, record):
@@ -63,11 +78,14 @@ class ProxyLoggingFilter(logging.Filter):
             if not hasattr(record, field): setattr(record, field, default)
         return True
 
-logging.basicConfig(level=logging.INFO)
+_log_level = logging.DEBUG if debug_mode else logging.INFO
+logging.basicConfig(level=_log_level)
 logger = logging.getLogger("duo-proxy")
+logger.setLevel(_log_level)
 logger.handlers.clear()
 logger.propagate = False
 ch = logging.StreamHandler()
+ch.setLevel(_log_level)
 ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(user)s - %(method)s %(path)s - %(message)s"))
 ch.addFilter(ProxyLoggingFilter())
 logger.addHandler(ch)
@@ -208,6 +226,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"Failed to fetch Duo OIDC Discovery: {e}")
     
     await cache.connect()
+    logger.info(f"Debug mode: {'ON' if debug_mode else 'OFF'}")
     logger.info(f"Duo Proxy Online | Target: {DUO_HOST} | Mode: {'Distributed' if REDIS_URL else 'Standalone'}")
     yield
     await cache.close()
@@ -358,19 +377,53 @@ async def custom_swagger_ui_html(request: Request):
 
     scope_str = " ".join(["openid", "profile", "email"] + [s for s in scopes if s.startswith("duo-admin-api:")])
     
+    _swaggerui_init_params = (
+        "url: '/openapi.json', dom_id: '#swagger-ui', "
+        "presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset], "
+        "layout: \"BaseLayout\", deepLinking: true, "
+        "oauth2RedirectUrl: window.location.origin + '/docs/oauth2-redirect', "
+        "persistAuthorization: true, usePkceWithAuthorizationCodeGrant: true"
+    )
+    # Build scope badges server-side — no raw HTML user data, all values are
+    # internal scope strings validated via parse_scopes() and the allow-list check above.
+    _api_scopes = [s for s in scopes if s.startswith("duo-admin-api:")]
+    def _scope_badge(s):
+        label = s[len("duo-admin-api:"):]          # strip common prefix
+        parts = label.split(":")
+        cls = "scope-badge-master" if len(parts) == 1 else "scope-badge-granular"
+        # Use textContent-safe attribute; label contains only alphanumeric / colon chars
+        return f'<span class="scope-badge {cls}">{label}</span>'
+    _badges_html = "".join(_scope_badge(s) for s in sorted(_api_scopes))
+    _scope_count = len(_api_scopes)
+
     html = f"""
     <!DOCTYPE html><html><head><link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
-    <title>{app.title}</title><style>
+    <title>{html.escape(app.title)}</title><style>
         body {{ margin: 0; padding: 0; }}
-        #proxy-header {{ background-color: #1b1b1b; color: white; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; font-family: sans-serif; border-bottom: 3px solid #4bfa4b; position: sticky; top: 0; z-index: 1000; }}
-        .header-title {{ font-weight: bold; color: #4bfa4b; }}
+        #proxy-header {{ background-color: #1b1b1b; color: white; padding: 10px 20px; display: flex; align-items: center; gap: 16px; justify-content: space-between; font-family: sans-serif; border-bottom: 3px solid #4bfa4b; position: sticky; top: 0; z-index: 1000; }}
+        .header-title {{ font-weight: bold; color: #4bfa4b; white-space: nowrap; }}
         .custom-btn {{ padding: 6px 15px; border-radius: 4px; font-weight: bold; text-decoration: none; border: none; cursor: pointer; font-size: 13px; margin-left: 10px; }}
         .btn-logout {{ background: #fa4b4b; color: white !important; }}
         .btn-dcr {{ background: #4bfa4b; color: black !important; }}
         .btn-clear {{ background: #666; color: white !important; }}
         .iat-input {{ padding: 5px 10px; border-radius: 4px; border: 1px solid #4bfa4b; background: #333; color: white; font-size: 13px; margin-left: 10px; width: 180px; }}
+        .scope-display {{ flex: 1 1 0; min-width: 0; }}
+        .scope-display summary {{ cursor: pointer; font-size: 12px; color: #aaa; user-select: none; white-space: nowrap; list-style: none; display: inline-flex; align-items: center; gap: 6px; }}
+        .scope-display summary::before {{ content: '▶'; font-size: 9px; transition: transform 0.15s; }}
+        .scope-display[open] summary::before {{ transform: rotate(90deg); }}
+        .scope-display summary::-webkit-details-marker {{ display: none; }}
+        .scope-badges {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }}
+        .scope-badge {{ display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; font-family: monospace; white-space: nowrap; }}
+        .scope-badge-master {{ background: #4bfa4b; color: #111; }}
+        .scope-badge-granular {{ background: #2a7a2a; color: #d4f5d4; }}
     </style></head><body>
-    <div id="proxy-header"><div class="header-title">Duo Admin API Proxy</div><div class="header-controls">
+    <div id="proxy-header">
+      <div class="header-title">Duo Admin API Proxy</div>
+      <details class="scope-display">
+        <summary>Scopes ({_scope_count})</summary>
+        <div class="scope-badges">{_badges_html}</div>
+      </details>
+      <div class="header-controls">
         <button id="clear-btn" class="custom-btn btn-clear">Clear Saved Client</button>
         <a href="/logout" class="custom-btn btn-logout">Logout</a>
         <input id="iat-input" type="password" class="iat-input" placeholder="DCR Access Token" autocomplete="off" style="display: {'inline-block' if PROXY_ENABLE_DCR else 'none'}" title="Enter your DCR_INITIAL_ACCESS_TOKEN">
@@ -379,47 +432,73 @@ async def custom_swagger_ui_html(request: Request):
     <div id="swagger-ui"></div>
     <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
     <script>
-        window.onload = function() {{
-            const ui = SwaggerUIBundle({{
-                url: '/openapi.json', dom_id: '#swagger-ui', presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-                layout: "BaseLayout", deepLinking: true, oauth2RedirectUrl: window.location.origin + '/docs/oauth2-redirect',
-                persistAuthorization: true, usePkceWithAuthorizationCodeGrant: true
-            }});
-            ui.initOAuth({{ scopes: "{scope_str}", usePkceWithAuthorizationCodeGrant: true }});
+        const DEBUG = {str(debug_mode).lower()};
+        console.log('[Proxy] debug mode:', DEBUG);
 
-            // Restore IAT input from sessionStorage
+        window.onload = function() {{
+            if (DEBUG) {{
+                console.log('[Proxy] Page load sessionStorage state:', {{
+                    proxy_dcr_client_id: sessionStorage.getItem('proxy_dcr_client_id'),
+                    proxy_dcr_scopes: sessionStorage.getItem('proxy_dcr_scopes'),
+                    proxy_dcr_iat: sessionStorage.getItem('proxy_dcr_iat') ? '(set)' : '(not set)'
+                }});
+            }}
+
+            const swaggerInitParams = {{
+                {_swaggerui_init_params}
+            }};
+            if (DEBUG) {{ console.log('[Proxy] SwaggerUIBundle init params:', swaggerInitParams); }}
+            const ui = SwaggerUIBundle(swaggerInitParams);
+
+            const oauthScopeStr = "{scope_str}";
+            if (DEBUG) {{ console.log('[Proxy] OAuth scope string:', oauthScopeStr); }}
+            ui.initOAuth({{ scopes: oauthScopeStr, usePkceWithAuthorizationCodeGrant: true }});
+
+            // Restore IAT input from sessionStorage (debug mode pre-fills from server)
             const iatInput = document.getElementById('iat-input');
             if (iatInput) {{
-                iatInput.value = sessionStorage.getItem('proxy_dcr_iat') || '';
+                const debugIat = DEBUG ? {json.dumps(DCR_INITIAL_TOKEN or '')} : '';
+                iatInput.value = sessionStorage.getItem('proxy_dcr_iat') || debugIat;
+                if (debugIat && !sessionStorage.getItem('proxy_dcr_iat')) sessionStorage.setItem('proxy_dcr_iat', debugIat);
                 iatInput.oninput = () => sessionStorage.setItem('proxy_dcr_iat', iatInput.value);
             }}
 
+            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+
             const fillModal = () => {{
                 const cid = sessionStorage.getItem('proxy_dcr_client_id');
-                const secret = sessionStorage.getItem('proxy_dcr_client_secret');
                 if (!cid) return;
-                const idIn = document.querySelector('input[name="client_id"]');
-                const secIn = document.querySelector('input[name="client_secret"]');
-                const cbs = document.querySelectorAll('.scope-checkbox');
-                if (idIn && secIn) {{
-                    if (idIn.value !== cid) {{
-                        idIn.value = cid;
-                        idIn.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-                    if (secIn.value !== secret) {{
-                        secIn.value = secret;
-                        secIn.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-                    if (cbs.length > 0) cbs.forEach(cb => {{ if (!cb.checked) cb.click(); }});
-                    clearInterval(poller);
-                }}
+
+                const idIn = document.getElementById('client_id_authorizationCode');
+                if (DEBUG) {{ console.log('[DCR fillModal] client_id input found:', !!idIn, idIn ? `current value: "${{idIn.value}}"` : ''); }}
+                if (!idIn) return;
+
+                // Use React-compatible setter so Swagger UI picks up the value
+                nativeSetter.call(idIn, cid);
+                idIn.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                if (DEBUG) {{ console.log('[DCR fillModal] Set client_id to:', cid); }}
+
+                // Select scopes from DCR response — checkbox ids are "{{scope}}-authorizationCode-checkbox-ProxyOAuth2"
+                const dcrScopes = (sessionStorage.getItem('proxy_dcr_scopes') || '').split(' ').filter(Boolean);
+                if (DEBUG) {{ console.log('[DCR fillModal] DCR scopes to match:', dcrScopes); }}
+
+                const allCbs = document.querySelectorAll('input[type="checkbox"][id$="-authorizationCode-checkbox-ProxyOAuth2"]');
+                if (DEBUG) {{ console.log('[DCR fillModal] scope checkboxes found:', allCbs.length); }}
+                allCbs.forEach(cb => {{
+                    const scope = cb.id.replace('-authorizationCode-checkbox-ProxyOAuth2', '');
+                    const shouldCheck = dcrScopes.length > 0 ? dcrScopes.includes(scope) : true;
+                    if (DEBUG) {{ console.log('[DCR fillModal] scope:', scope, '| match:', shouldCheck, '| already checked:', cb.checked); }}
+                    if (shouldCheck && !cb.checked) cb.click();
+                }});
+
+                clearInterval(poller);
             }};
 
             const poller = setInterval(fillModal, 500);
 
             document.getElementById('clear-btn').onclick = () => {{
                 sessionStorage.removeItem('proxy_dcr_client_id');
-                sessionStorage.removeItem('proxy_dcr_client_secret');
+                sessionStorage.removeItem('proxy_dcr_scopes');
                 sessionStorage.removeItem('proxy_dcr_iat');
                 if (iatInput) iatInput.value = '';
                 window.location.reload();
@@ -443,9 +522,10 @@ async def custom_swagger_ui_html(request: Request):
                         }});
                         if (!resp.ok) throw new Error(`Registration failed: ${{resp.status}}`);
                         const data = await resp.json();
+                        if (DEBUG) {{ console.log('[DCR] Registration response:', data); }}
+                        if (DEBUG) {{ console.log('[DCR] client_id:', data.client_id, '| scope:', data.scope); }}
                         sessionStorage.setItem('proxy_dcr_client_id', data.client_id);
-                        sessionStorage.setItem('proxy_dcr_client_secret', data.client_secret || "");
-                        alert("Success! Client registered. Opening authorization modal...");
+                        if (data.scope) sessionStorage.setItem('proxy_dcr_scopes', data.scope);
                         document.querySelector('.authorize').click();
                     }} catch (e) {{ alert(e.message); }}
                 }};
@@ -503,7 +583,7 @@ async def duo_proxy(version: str, path: str, request: Request):
     else: action = "update"
     
     if not (f"duo-admin-api:{action}" in scopes or f"duo-admin-api:{action}:{res}" in scopes):
-        get_proxy_logger(user=get_user_display_name(u)).warning(f"Forbidden: Missing {action} scope")
+        get_proxy_logger(user=get_user_display_name(u)).debug(f"Forbidden: Missing {action} scope for {res}")
         raise HTTPException(status_code=403, detail=f"Requires duo-admin-api:{action}")
 
     full_path = f"/admin/{version}/{path}"
@@ -557,10 +637,13 @@ async def duo_proxy(version: str, path: str, request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app", 
-        host="0.0.0.0", 
-        port=int(os.getenv("PROXY_PORT", 8443)), 
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PROXY_PORT", 8443)),
         reload=PROXY_DEBUG,
+        log_level="debug" if debug_mode else "info",
+        access_log=debug_mode,
+        timeout_graceful_shutdown=0 if debug_mode else 30,
         ssl_certfile=os.getenv("PROXY_CERT_PATH") if os.getenv("PROXY_USE_HTTPS") == "true" else None,
         ssl_keyfile=os.getenv("PROXY_KEY_PATH") if os.getenv("PROXY_USE_HTTPS") == "true" else None
     )
