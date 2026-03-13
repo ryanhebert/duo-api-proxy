@@ -27,7 +27,7 @@ A production-grade, asynchronous authentication proxy for the Duo Admin API. Thi
 │   ├── Dockerfile          # Production container definition
 │   ├── docker-compose.yml  # Multi-container orchestration (Proxy + Redis)
 │   └── gunicorn_conf.py    # Production process manager config
-├── .env.template           # Documented configuration template
+├── .env.example            # Documented configuration template
 ├── requirements.txt        # Python dependencies
 └── certs/                  # Generated SSL certificates (git-ignored)
 ```
